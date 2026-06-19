@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Один цикл: собрать данные -> найти сигналы -> записать -> оценить созревшие -> отчёт -> алерт."""
+"""Цикл: сбор -> сигналы -> запись -> оценка -> очистка -> отчёт -> алерт."""
 import time, logging
 from src import db, collect, signals, track, report, alerts
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
@@ -13,10 +13,11 @@ def main():
         fired += signals.detect(conn, ccy)
     new = track.record(conn, fired)
     graded = track.grade(conn, int(time.time() * 1000))
+    removed = db.prune_candles(conn, keep_days=20)   # авто-очистка старых свечей
     report.render(conn)
     alerts.send(conn)
-    print(f"Найдено сигналов сейчас: {len(fired)} (новых записано: {new}). "
-          f"Оценено новых исходов: {graded}.")
+    print(f"Сигналов сейчас: {len(fired)} (новых: {new}). Оценено исходов: {graded}. "
+          f"Очищено старых свечей: {removed}.")
 
 
 if __name__ == "__main__":
