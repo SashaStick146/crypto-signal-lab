@@ -24,3 +24,9 @@ def vol_zscore(vols):
 def ret_over(closes, n):
     if len(closes) < n + 1: return None
     return closes[-1] / closes[-1 - n] - 1
+
+
+def sma(closes, period):
+    if len(closes) < period:
+        return None
+    return sum(closes[-period:]) / period

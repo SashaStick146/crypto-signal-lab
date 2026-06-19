@@ -76,7 +76,7 @@ def render(conn, out_path=REPORT_PATH):
   <h1>📡 Crypto Signal Lab</h1>
   <div class="sub">Обновлено: {ts} · сигналов в журнале: {n_total} · оценено исходов: {n_graded}</div>
   <div class="note">{ml_status}<br>Программа учится сама: каждый сигнал проверяется через
-  {track.HORIZON_H}ч. Колонка <b>ML</b> — вероятность успеха по обученной модели. </div>
+  {track.HORIZON_H}ч. Колонка <b>ML</b> — вероятность успеха по обученной модели.</div>
 
   <h2>🎯 Текущие сетапы</h2>
   <table>

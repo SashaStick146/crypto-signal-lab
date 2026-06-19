@@ -1,11 +1,12 @@
-"""Поиск сигналов + расчёт «фич» (контекста) для ML."""
+"""Поиск сигналов + фичи (контекст) для ML + фильтр тренда (антишум)."""
 from . import db
-from .indicators import rsi, vol_zscore, ret_over
+from .indicators import rsi, vol_zscore, ret_over, sma
 
 VOL_Z = 2.5
 RSI_LOW, RSI_HIGH = 30, 70
 FUND_HIGH, FUND_LOW = 0.0006, -0.0006
 LSR_HIGH, LSR_LOW = 2.3, 0.85
+STRONG_TREND = 0.05      # сильный тренд = отклонение цены от SMA50 на 5%+
 
 
 def detect(conn, symbol):
@@ -21,12 +22,14 @@ def detect(conn, symbol):
     prev_high = max(highs[-25:-1]); prev_low = min(lows[-25:-1])
     dhigh = entry / prev_high - 1 if prev_high else 0.0
     dlow = entry / prev_low - 1 if prev_low else 0.0
+    s50 = sma(closes, 50)
+    trend = (entry / s50 - 1) if s50 else 0.0      # >0 восходящий, <0 нисходящий
     f = db.latest_funding(conn, symbol); ls = db.latest_lsr(conn, symbol)
 
     def feats(direction):
         return {"rsi": (r or 50) / 100, "volz": min(vz or 0, 6) / 6, "ret24": r24, "ret6": r6,
                 "dhigh": dhigh, "dlow": dlow, "fund": (f or 0) * 100, "lsr": (ls or 1.0),
-                "dir": 1 if direction == "long" else 0}
+                "trend": trend, "dir": 1 if direction == "long" else 0}
 
     out = []
     def add(kind, direction):
@@ -47,4 +50,13 @@ def detect(conn, symbol):
         elif ls <= LSR_LOW: add("crowd_too_short", "long")
     if closes[-1] > prev_high: add("breakout_up", "long")
     if closes[-1] < prev_low: add("breakdown", "short")
-    return out
+
+    # ФИЛЬТР ТРЕНДА (антишум): не шортим против сильного роста и не лонгуем против сильного падения
+    filtered = []
+    for s in out:
+        if s["direction"] == "short" and trend > STRONG_TREND:
+            continue
+        if s["direction"] == "long" and trend < -STRONG_TREND:
+            continue
+        filtered.append(s)
+    return filtered

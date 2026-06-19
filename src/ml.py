@@ -7,7 +7,7 @@
 """
 import json, math
 
-FEATURES = ["rsi", "volz", "ret24", "ret6", "dhigh", "dlow", "fund", "lsr", "dir"]
+FEATURES = ["rsi", "volz", "ret24", "ret6", "dhigh", "dlow", "fund", "lsr", "trend", "dir"]
 MIN_TRAIN = 40          # минимум проверенных примеров, чтобы доверять модели
 EPOCHS = 300
 LR = 0.3
