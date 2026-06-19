@@ -1,4 +1,4 @@
-"""База (SQLite): свечи, фандинг, лонг/шорт, журнал сигналов с исходами."""
+"""База (SQLite): свечи, фандинг, лонг/шорт, журнал сигналов с исходами и фичами."""
 import os, sqlite3, json
 from pathlib import Path
 DB_PATH = Path(os.getenv("LAB_DB", Path(__file__).resolve().parent.parent / "data" / "lab.db"))
@@ -17,33 +17,41 @@ def connect(db_path=DB_PATH):
         entry REAL, horizon_h INTEGER, outcome REAL, win INTEGER, graded INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
     CREATE INDEX IF NOT EXISTS idx_candles ON candles(symbol,ts);
-    CREATE INDEX IF NOT EXISTS idx_sig_kind ON signals(kind);
     """)
+    # миграция: добавить колонку features, если её ещё нет
+    cols = [r[1] for r in c.execute("PRAGMA table_info(signals)")]
+    if "features" not in cols:
+        c.execute("ALTER TABLE signals ADD COLUMN features TEXT")
     c.commit(); return c
 
 
 def upsert_candles(conn, symbol, rows):
-    data = []
-    for r in rows:
-        ts = int(r[0])
-        data.append((symbol, ts, float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])))
+    data = [(symbol, int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])) for r in rows]
     conn.executemany("INSERT OR IGNORE INTO candles(symbol,ts,o,h,l,c,vol) VALUES (?,?,?,?,?,?,?)", data)
     conn.commit(); return len(data)
 
 
-def upsert_funding(conn, symbol, ts, rate):
-    conn.execute("INSERT OR IGNORE INTO funding(symbol,ts,rate) VALUES (?,?,?)", (symbol, int(ts), float(rate)))
+def prune_candles(conn, keep_days=20):
+    """Удалить свечи старше keep_days, чтобы база не пухла. Журнал сигналов не трогаем."""
+    import time
+    cutoff = int((time.time() - keep_days * 86400) * 1000)
+    cur = conn.execute("DELETE FROM candles WHERE ts < ?", (cutoff,))
+    conn.execute("DELETE FROM lsr WHERE ts < ?", (cutoff,))
     conn.commit()
+    return cur.rowcount
+
+
+def upsert_funding(conn, symbol, ts, rate):
+    conn.execute("INSERT OR IGNORE INTO funding(symbol,ts,rate) VALUES (?,?,?)", (symbol, int(ts), float(rate))); conn.commit()
 
 
 def upsert_lsr(conn, symbol, rows):
-    data = [(symbol, int(r[0]), float(r[1])) for r in rows]
-    conn.executemany("INSERT OR IGNORE INTO lsr(symbol,ts,ratio) VALUES (?,?,?)", data); conn.commit()
+    conn.executemany("INSERT OR IGNORE INTO lsr(symbol,ts,ratio) VALUES (?,?,?)",
+                     [(symbol, int(r[0]), float(r[1])) for r in rows]); conn.commit()
 
 
 def last_closes(conn, symbol, n=200):
-    rows = conn.execute("SELECT ts,o,h,l,c,vol FROM candles WHERE symbol=? ORDER BY ts DESC LIMIT ?",
-                        (symbol, n)).fetchall()
+    rows = conn.execute("SELECT ts,o,h,l,c,vol FROM candles WHERE symbol=? ORDER BY ts DESC LIMIT ?", (symbol, n)).fetchall()
     return list(reversed(rows))
 
 
