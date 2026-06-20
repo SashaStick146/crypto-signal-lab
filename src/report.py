@@ -1,5 +1,5 @@
-"""HTML-отчёт: текущие сетапы (ML + доказанная сила) + послужной список."""
-import time, html
+"""HTML-отчёт: текущие сетапы (ML) + послужной список + последние записи журнала."""
+import time, html, json
 from pathlib import Path
 from . import track, ml
 
@@ -15,7 +15,6 @@ def render(conn, out_path=REPORT_PATH):
     st = track.stats(conn)
     model = ml.train(conn)
 
-    import json
     cur = conn.execute(
         "SELECT * FROM signals WHERE graded=0 AND ts=(SELECT MAX(ts) FROM signals)").fetchall()
 
@@ -25,38 +24,50 @@ def render(conn, out_path=REPORT_PATH):
         except Exception:
             return None
 
-    def sort_key(s):
-        p = ml_prob(s)
-        return -(p if p is not None else st.get(s["kind"], {}).get("avg_ret", -9))
-    cur = sorted(cur, key=sort_key)
-
+    cur = sorted(cur, key=lambda s: -((ml_prob(s) if ml_prob(s) is not None
+                                       else st.get(s["kind"], {}).get("avg_ret", -9))))
     cur_rows = []
     for s in cur:
-        k = s["kind"]; ks = st.get(k, {})
-        dir_color = "#5fd38a" if s["direction"] == "long" else "#d64545"
-        p = ml_prob(s)
+        ks = st.get(s["kind"], {}); p = ml_prob(s)
+        dc = "#5fd38a" if s["direction"] == "long" else "#d64545"
         ml_cell = f"{p:.0%}" if p is not None else "—"
         proven = (f"винрейт {_wr(ks.get('winrate'))}, ср.дох {_pct(ks.get('avg_ret'))} (n={ks.get('n')})"
                   if ks else "нет статистики")
         cur_rows.append(
-            f"<tr><td><b>{html.escape(s['symbol'])}</b></td><td>{html.escape(k)}</td>"
-            f"<td style='color:{dir_color}'>{s['direction']}</td><td>{s['entry']:.4g}</td>"
+            f"<tr><td><b>{html.escape(s['symbol'])}</b></td><td>{html.escape(s['kind'])}</td>"
+            f"<td style='color:{dc}'>{s['direction']}</td><td>{s['entry']:.4g}</td>"
             f"<td><b style='color:#e0b341'>{ml_cell}</b></td><td>{proven}</td></tr>")
 
     krows = sorted(st.items(), key=lambda kv: -kv[1]["avg_ret"])
-    track_rows = []
-    for k, v in krows:
-        color = "#5fd38a" if v["avg_ret"] > 0 else "#d64545"
-        track_rows.append(f"<tr><td>{html.escape(k)}</td><td>{v['n']}</td>"
-                          f"<td>{_wr(v['winrate'])}</td><td style='color:{color}'>{_pct(v['avg_ret'])}</td></tr>")
+    track_rows = [
+        f"<tr><td>{html.escape(k)}</td><td>{v['n']}</td><td>{_wr(v['winrate'])}</td>"
+        f"<td style='color:{'#5fd38a' if v['avg_ret']>0 else '#d64545'}'>{_pct(v['avg_ret'])}</td></tr>"
+        for k, v in krows]
+
+    # последние записи журнала (история)
+    jrows = conn.execute(
+        "SELECT symbol,kind,direction,entry,ts,graded,win,outcome FROM signals ORDER BY ts DESC, rowid DESC LIMIT 30").fetchall()
+    jr = []
+    for r in jrows:
+        when = time.strftime("%m-%d %H:%M", time.gmtime(int(r["ts"] or 0) / 1000))
+        dc = "#5fd38a" if r["direction"] == "long" else "#d64545"
+        if not r["graded"]:
+            status = "⏳ зреет"
+        elif r["win"]:
+            status = f"✅ {_pct(r['outcome'])}"
+        else:
+            status = f"❌ {_pct(r['outcome'])}"
+        jr.append(
+            f"<tr><td>{when}</td><td><b>{html.escape(r['symbol'])}</b></td>"
+            f"<td>{html.escape(r['kind'])}</td><td style='color:{dc}'>{r['direction']}</td>"
+            f"<td>{r['entry']:.4g}</td><td>{status}</td></tr>")
 
     n_graded = conn.execute("SELECT COUNT(*) c FROM signals WHERE graded=1").fetchone()["c"]
     n_total = conn.execute("SELECT COUNT(*) c FROM signals").fetchone()["c"]
-    if model.get("ready"):
-        ml_status = f"🤖 ML-модель обучена на {model['n']} проверенных сигналах и активна."
-    else:
-        ml_status = (f"🤖 ML-модель копит данные: {model.get('n',0)}/{ml.MIN_TRAIN} проверенных сигналов. "
-                     f"Колонка ML заработает, когда наберётся достаточно.")
+    ml_status = (f"🤖 ML-модель обучена на {model['n']} проверенных сигналах и активна."
+                 if model.get("ready") else
+                 f"🤖 ML-модель копит данные: {model.get('n',0)}/{ml.MIN_TRAIN} проверенных сигналов "
+                 f"(это порог ВКЛЮЧЕНИЯ; дальше она учится постоянно и не останавливается).")
 
     doc = f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
@@ -89,6 +100,13 @@ def render(conn, out_path=REPORT_PATH):
   <table>
     <tr><th>Тип сигнала</th><th>Проверено (n)</th><th>Винрейт</th><th>Ср. доходность за {track.HORIZON_H}ч</th></tr>
     {''.join(track_rows) or '<tr><td colspan=4>Пока нет оценённых исходов — нужно накопить историю.</td></tr>'}
+  </table>
+
+  <h2>🗒 Последние записи журнала</h2>
+  <div class="sub">История сигналов и чем они закончились. ⏳ ещё зреет · ✅ прогноз сбылся · ❌ не сбылся.</div>
+  <table>
+    <tr><th>Время (UTC)</th><th>Монета</th><th>Сигнал</th><th>Прогноз</th><th>Цена</th><th>Итог</th></tr>
+    {''.join(jr) or '<tr><td colspan=6>Журнал пуст.</td></tr>'}
   </table>
 </div></body></html>"""
     Path(out_path).write_text(doc, encoding="utf-8")
