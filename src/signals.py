@@ -1,12 +1,15 @@
-"""Поиск сигналов + фичи (контекст) для ML + фильтр тренда (антишум)."""
+"""Сигналы + адаптивные уровни TP/SL от волатильности (ATR) + фичи + фильтр тренда."""
 from . import db
-from .indicators import rsi, vol_zscore, ret_over, sma
+from .indicators import rsi, vol_zscore, ret_over, sma, atr
 
 VOL_Z = 2.5
 RSI_LOW, RSI_HIGH = 30, 70
 FUND_HIGH, FUND_LOW = 0.0006, -0.0006
 LSR_HIGH, LSR_LOW = 2.3, 0.85
-STRONG_TREND = 0.05      # сильный тренд = отклонение цены от SMA50 на 5%+
+STRONG_TREND = 0.05
+TP_ATR, SL_ATR = 3.0, 2.0            # уровни = кратные ATR
+TP_MIN, TP_MAX = 0.01, 0.15          # ограничения тейка (1%..15%)
+SL_MIN, SL_MAX = 0.005, 0.08         # ограничения стопа (0.5%..8%)
 
 
 def detect(conn, symbol):
@@ -20,21 +23,34 @@ def detect(conn, symbol):
     r = rsi(closes); vz = vol_zscore(vols)
     r24 = ret_over(closes, 24) or 0.0; r6 = ret_over(closes, 6) or 0.0
     prev_high = max(highs[-25:-1]); prev_low = min(lows[-25:-1])
-    dhigh = entry / prev_high - 1 if prev_high else 0.0
-    dlow = entry / prev_low - 1 if prev_low else 0.0
-    s50 = sma(closes, 50)
-    trend = (entry / s50 - 1) if s50 else 0.0      # >0 восходящий, <0 нисходящий
+    dhigh = entry/prev_high - 1 if prev_high else 0.0
+    dlow = entry/prev_low - 1 if prev_low else 0.0
+    s50 = sma(closes, 50); trend = (entry/s50 - 1) if s50 else 0.0
+    a = atr(highs, lows, closes, 14)
+    # адаптивные проценты уровней
+    if a and entry:
+        tp_pct = min(max(TP_ATR*a/entry, TP_MIN), TP_MAX)
+        sl_pct = min(max(SL_ATR*a/entry, SL_MIN), SL_MAX)
+    else:
+        tp_pct, sl_pct = 0.03, 0.02
     f = db.latest_funding(conn, symbol); ls = db.latest_lsr(conn, symbol)
 
     def feats(direction):
-        return {"rsi": (r or 50) / 100, "volz": min(vz or 0, 6) / 6, "ret24": r24, "ret6": r6,
-                "dhigh": dhigh, "dlow": dlow, "fund": (f or 0) * 100, "lsr": (ls or 1.0),
+        return {"rsi": (r or 50)/100, "volz": min(vz or 0, 6)/6, "ret24": r24, "ret6": r6,
+                "dhigh": dhigh, "dlow": dlow, "fund": (f or 0)*100, "lsr": (ls or 1.0),
                 "trend": trend, "dir": 1 if direction == "long" else 0}
+
+    def levels(direction):
+        if direction == "long":
+            return entry*(1+tp_pct), entry*(1-sl_pct)
+        return entry*(1-tp_pct), entry*(1+sl_pct)
 
     out = []
     def add(kind, direction):
-        out.append({"symbol": symbol, "ts": ts, "kind": kind, "direction": direction,
-                    "entry": entry, "features": feats(direction)})
+        tp_price, sl_price = levels(direction)
+        out.append({"symbol": symbol, "ts": ts, "kind": kind, "direction": direction, "entry": entry,
+                    "tp_price": tp_price, "sl_price": sl_price, "tp_pct": tp_pct, "sl_pct": sl_pct,
+                    "features": feats(direction)})
 
     if vz is not None and vz >= VOL_Z:
         add("vol_spike_up" if last["c"] >= last["o"] else "vol_spike_down",
@@ -51,12 +67,9 @@ def detect(conn, symbol):
     if closes[-1] > prev_high: add("breakout_up", "long")
     if closes[-1] < prev_low: add("breakdown", "short")
 
-    # ФИЛЬТР ТРЕНДА (антишум): не шортим против сильного роста и не лонгуем против сильного падения
     filtered = []
     for s in out:
-        if s["direction"] == "short" and trend > STRONG_TREND:
-            continue
-        if s["direction"] == "long" and trend < -STRONG_TREND:
-            continue
+        if s["direction"] == "short" and trend > STRONG_TREND: continue
+        if s["direction"] == "long" and trend < -STRONG_TREND: continue
         filtered.append(s)
     return filtered
